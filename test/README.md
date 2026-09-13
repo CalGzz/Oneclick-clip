@@ -9,6 +9,7 @@ This directory contains unit tests for the **MoneyPrinterTurbo** project.
   - `test_task_manager.py`: In-memory and Redis queue tests
   - `test_controller_*.py`: API controller tests split by controller domain
   - `test_video.py`, `test_voice.py`: Media service tests
+  - `test_mvp.py`: Local one-topic MVP (template script, title cards, oneclick CLI)
 - `test_main.py`: Application entry-point test
 
 ## Running Tests

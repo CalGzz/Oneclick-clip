@@ -158,15 +158,6 @@ def _short_title(topic: str, max_chars: int = 22) -> str:
     return "\n".join(lines)
 
 
-def _escape_drawtext(text: str) -> str:
-    return (
-        text.replace("\\", "\\\\")
-        .replace(":", "\\:")
-        .replace("'", "\\'")
-        .replace("%", "\\%")
-    )
-
-
 def _title_font_path(_topic: str) -> str:
     # BeVietnamPro-Bold ships with a zero-width space glyph, so title cards
     # would render English as "HowAI ischanging". STHeitiMedium keeps spaces
@@ -182,6 +173,85 @@ def _title_font_path(_topic: str) -> str:
     return ""
 
 
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))
+
+
+def render_title_card_image(topic: str, output_path: str, color: str) -> None:
+    """Paint a 1080x1920 title card. Pillow avoids ffmpeg drawtext/libfreetype."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (1080, 1920), _hex_to_rgb(color))
+    draw = ImageDraw.Draw(image)
+    font_path = _title_font_path(topic)
+    try:
+        font = (
+            ImageFont.truetype(font_path, 64)
+            if font_path
+            else ImageFont.load_default()
+        )
+    except OSError:
+        font = ImageFont.load_default()
+
+    title = _short_title(topic) or " "
+    bbox = draw.multiline_textbbox(
+        (0, 0), title, font=font, align="center", spacing=16
+    )
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    x = (1080 - text_width) / 2 - bbox[0]
+    y = (1920 - text_height) / 2 - bbox[1]
+    draw.multiline_text(
+        (x, y),
+        title,
+        font=font,
+        fill=(255, 255, 255),
+        align="center",
+        spacing=16,
+        stroke_width=4,
+        stroke_fill=(0, 0, 0),
+    )
+    image.save(output_path)
+
+
+def _encode_still_to_mp4(
+    image_path: str,
+    output_path: str,
+    *,
+    duration: float,
+    ffmpeg: str,
+) -> bool:
+    command = [
+        ffmpeg,
+        "-y",
+        "-loop",
+        "1",
+        "-i",
+        image_path,
+        "-t",
+        str(duration),
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
+        "-movflags",
+        "+faststart",
+        output_path,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning(f"title card ffmpeg failed: {exc}")
+        return False
+    return completed.returncode == 0 and os.path.isfile(output_path)
+
+
 def generate_title_cards(
     topic: str,
     output_dir: str,
@@ -189,104 +259,26 @@ def generate_title_cards(
     count: int = TITLE_CARD_COUNT,
     duration: float = TITLE_CARD_DURATION_SECONDS,
 ) -> list[str]:
-    """Render 1080x1920 color/title cards with ffmpeg. Color-only if drawtext fails."""
+    """Render 1080x1920 title cards as PNG, then encode with any ffmpeg build."""
     os.makedirs(output_dir, exist_ok=True)
     ffmpeg = utils.get_ffmpeg_binary()
-    title = _short_title(topic)
-    font_path = _title_font_path(topic)
     paths: list[str] = []
 
     for index in range(count):
         color = TITLE_CARD_COLORS[index % len(TITLE_CARD_COLORS)]
-        output_path = os.path.join(output_dir, f"mvp-title-{uuid4().hex}.mp4")
-        color_input = f"color=c=0x{color}:s=1080x1920:d={duration}:r=30"
-        command = [
-            ffmpeg,
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            color_input,
-        ]
-        text_file = ""
-        if font_path and title:
-            text_file = os.path.join(output_dir, f"mvp-title-{uuid4().hex}.txt")
-            with open(text_file, "w", encoding="utf-8") as handle:
-                handle.write(title)
-            drawtext = (
-                f"drawtext=fontfile={_escape_drawtext(font_path)}:"
-                f"textfile={_escape_drawtext(text_file)}:"
-                "fontsize=64:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:"
-                "expansion=none:borderw=4:bordercolor=black"
-            )
-            command.extend(["-vf", drawtext])
-        command.extend(
-            [
-                "-pix_fmt",
-                "yuv420p",
-                "-r",
-                "30",
-                "-movflags",
-                "+faststart",
-                output_path,
-            ]
-        )
-
+        stem = uuid4().hex
+        image_path = os.path.join(output_dir, f"mvp-title-{stem}.png")
+        output_path = os.path.join(output_dir, f"mvp-title-{stem}.mp4")
         try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            logger.warning(f"title card ffmpeg failed: {exc}")
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            if text_file and os.path.exists(text_file):
-                os.remove(text_file)
-            continue
-
-        if text_file and os.path.exists(text_file):
-            os.remove(text_file)
-
-        if completed.returncode != 0 or not os.path.isfile(output_path):
-            logger.warning(
-                "title card with text failed, retrying color-only: "
-                f"{completed.stderr[-400:] if completed.stderr else completed.returncode}"
-            )
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            color_only = [
-                ffmpeg,
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                color_input,
-                "-pix_fmt",
-                "yuv420p",
-                "-r",
-                "30",
-                "-movflags",
-                "+faststart",
-                output_path,
-            ]
-            retry = subprocess.run(
-                color_only,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if retry.returncode != 0 or not os.path.isfile(output_path):
-                logger.error(
-                    "color-only title card failed: "
-                    f"{retry.stderr[-400:] if retry.stderr else retry.returncode}"
-                )
+            render_title_card_image(topic, image_path, color)
+            if not _encode_still_to_mp4(
+                image_path, output_path, duration=duration, ffmpeg=ffmpeg
+            ):
+                logger.error(f"failed to encode title card: {output_path}")
                 continue
-
+        finally:
+            if os.path.exists(image_path):
+                os.remove(image_path)
         paths.append(output_path)
 
     if not paths:

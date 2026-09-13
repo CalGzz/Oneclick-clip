@@ -111,6 +111,19 @@ class TestMvpHelpers(unittest.TestCase):
         with patch("app.services.bgm.list_bgm_files", return_value=["/songs/a.mp3"]):
             self.assertEqual(mvp.resolve_bgm_type(), "random")
 
+    def test_render_title_card_image_is_1080x1920(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "card.png"
+            mvp.render_title_card_image(
+                "How AI is changing everyday life",
+                str(image_path),
+                "1a1a2e",
+            )
+            with Image.open(image_path) as image:
+                self.assertEqual(image.size, (1080, 1920))
+
     def test_generate_title_cards_writes_1080x1920_mp4(self):
         if not utils.check_ffmpeg_ready():
             self.skipTest("ffmpeg is required to render title cards")
@@ -218,31 +231,18 @@ class TestOneclickCli(unittest.TestCase):
 
 
 def _probe_video(path: str) -> dict[str, float]:
-    import subprocess
+    from moviepy import VideoFileClip
 
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,duration",
-            "-of",
-            "json",
-            path,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    stream = json.loads(completed.stdout)["streams"][0]
-    return {
-        "width": int(stream["width"]),
-        "height": int(stream["height"]),
-        "duration": float(stream.get("duration") or 0),
-    }
+    clip = VideoFileClip(path)
+    try:
+        width, height = clip.size
+        return {
+            "width": int(width),
+            "height": int(height),
+            "duration": float(clip.duration or 0),
+        }
+    finally:
+        clip.close()
 
 
 if __name__ == "__main__":

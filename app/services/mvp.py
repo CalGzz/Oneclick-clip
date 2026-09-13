@@ -133,11 +133,29 @@ def resolve_bgm_type() -> str:
     return "random" if files else ""
 
 
-def _short_title(topic: str, max_chars: int = 28) -> str:
-    collapsed = " ".join(topic.split())
-    if len(collapsed) <= max_chars:
-        return collapsed
-    return collapsed[: max_chars - 3].rstrip() + "..."
+def _short_title(topic: str, max_chars: int = 22) -> str:
+    """Fit the topic on up to two title-card lines without dropping spaces."""
+    words = " ".join(topic.split()).split()
+    if not words:
+        return ""
+
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max_chars:
+            lines.append(current)
+            current = word
+            if len(lines) == 2:
+                current = ""
+                break
+        else:
+            current = candidate
+    if current and len(lines) < 2:
+        lines.append(current)
+    if len(lines) == 2 and len(lines[1]) > max_chars:
+        lines[1] = lines[1][: max_chars - 3].rstrip() + "..."
+    return "\n".join(lines)
 
 
 def _escape_drawtext(text: str) -> str:
@@ -149,13 +167,19 @@ def _escape_drawtext(text: str) -> str:
     )
 
 
-def _title_font_path(topic: str) -> str:
-    font_name = "STHeitiMedium.ttc" if looks_cjk(topic) else "BeVietnamPro-Bold.ttf"
-    font_path = os.path.join(utils.font_dir(), font_name)
-    if os.path.isfile(font_path):
-        return font_path
-    fallback = os.path.join(utils.font_dir(), "STHeitiMedium.ttc")
-    return fallback if os.path.isfile(fallback) else ""
+def _title_font_path(_topic: str) -> str:
+    # BeVietnamPro-Bold ships with a zero-width space glyph, so title cards
+    # would render English as "HowAI ischanging". STHeitiMedium keeps spaces
+    # and also covers CJK topics.
+    preferred = (
+        os.path.join(utils.font_dir(), "STHeitiMedium.ttc"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    )
+    for font_path in preferred:
+        if os.path.isfile(font_path):
+            return font_path
+    return ""
 
 
 def generate_title_cards(
@@ -184,12 +208,16 @@ def generate_title_cards(
             "-i",
             color_input,
         ]
+        text_file = ""
         if font_path and title:
+            text_file = os.path.join(output_dir, f"mvp-title-{uuid4().hex}.txt")
+            with open(text_file, "w", encoding="utf-8") as handle:
+                handle.write(title)
             drawtext = (
                 f"drawtext=fontfile={_escape_drawtext(font_path)}:"
-                f"text='{_escape_drawtext(title)}':"
+                f"textfile={_escape_drawtext(text_file)}:"
                 "fontsize=64:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:"
-                "borderw=4:bordercolor=black"
+                "expansion=none:borderw=4:bordercolor=black"
             )
             command.extend(["-vf", drawtext])
         command.extend(
@@ -216,7 +244,12 @@ def generate_title_cards(
             logger.warning(f"title card ffmpeg failed: {exc}")
             if os.path.exists(output_path):
                 os.remove(output_path)
+            if text_file and os.path.exists(text_file):
+                os.remove(text_file)
             continue
+
+        if text_file and os.path.exists(text_file):
+            os.remove(text_file)
 
         if completed.returncode != 0 or not os.path.isfile(output_path):
             logger.warning(
@@ -310,7 +343,7 @@ def build_video_params(
         video_materials=materials,
         video_aspect="9:16",
         video_concat_mode="sequential",
-        video_clip_duration=5,
+        video_clip_duration=int(TITLE_CARD_DURATION_SECONDS),
         voice_name=voice_name or default_edge_voice(cleaned_topic),
         voice_rate=1.0,
         bgm_type=resolved_bgm,

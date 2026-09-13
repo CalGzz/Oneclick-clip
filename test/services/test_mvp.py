@@ -27,6 +27,12 @@ class TestMvpHelpers(unittest.TestCase):
         self.assertGreaterEqual(len(chinese), 40)
         self.assertLessEqual(len(chinese), 160)
 
+    def test_title_card_text_keeps_spaces_on_wrapped_lines(self):
+        self.assertEqual(
+            mvp._short_title("How AI is changing everyday life"),
+            "How AI is changing\neveryday life",
+        )
+
     def test_empty_topic_is_rejected(self):
         with self.assertRaises(ValueError):
             mvp.build_template_script("   ")
@@ -132,10 +138,10 @@ class TestMvpHelpers(unittest.TestCase):
             ):
                 materials, source_name = mvp.prepare_visuals("topic")
 
-        self.assertEqual(source_name, "clips")
-        self.assertEqual(len(materials), 1)
-        self.assertTrue(materials[0].url.startswith(str(storage_dir)))
-        self.assertEqual(Path(materials[0].url).read_bytes(), b"local-clip")
+                self.assertEqual(source_name, "clips")
+                self.assertEqual(len(materials), 1)
+                self.assertTrue(materials[0].url.startswith(str(storage_dir)))
+                self.assertEqual(Path(materials[0].url).read_bytes(), b"local-clip")
 
     def test_build_video_params_uses_local_source_and_edge_voice(self):
         materials = [MaterialInfo(provider="local", url="/tmp/card.mp4", duration=0)]

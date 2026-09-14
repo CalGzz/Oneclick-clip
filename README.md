@@ -18,6 +18,17 @@
 
 </div>
 
+## 本地 MVP（无需付费 API）
+
+一条主题即可生成可播放的 9:16（1080×1920）短视频，约 15–30 秒。一次安装 Python 3.11+、ffmpeg，然后：
+
+```bash
+uv sync
+uv run python oneclick.py "How AI is changing everyday life"
+```
+
+成片路径见命令输出的 `video` 字段（`storage/tasks/<task-id>/`）。完整说明见 [docs/MVP.md](docs/MVP.md)。
+
 ## 界面预览 🖥️
 
 <h4 align="center">WebUI</h4>

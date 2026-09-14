@@ -18,6 +18,17 @@ English | [简体中文](README.md) | [日本語](README-ja.md) | [Releases](htt
 
 </div>
 
+## Local MVP (no paid API)
+
+One topic string produces a playable 9:16 (1080×1920) MP4, about 15–30 seconds. Install Python 3.11+ and ffmpeg once, then:
+
+```bash
+uv sync
+uv run python oneclick.py "How AI is changing everyday life"
+```
+
+The JSON stdout field `video` is the output path under `storage/tasks/<task-id>/`. See [docs/MVP.md](docs/MVP.md).
+
 ## Screenshots 🖥️
 
 <h4 align="center">WebUI</h4>

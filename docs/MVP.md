@@ -22,6 +22,8 @@ You do **not** need to fill LLM, Pexels, or other vendor keys for this MVP.
 Optional local assets:
 
 - Drop clips or images in `resource/clips/` (`.mp4`, `.mov`, `.mkv`, `.webm`, `.jpg`, `.png`).
+  When that folder has supported files, `python oneclick.py` uses them instead of title cards.
+  An empty folder (or only `.gitkeep`) still falls back to generated title cards.
 - Bundled BGM already lives in `resource/songs/`. Delete or empty that folder for a silent video, or pass `--no-bgm`.
 
 ## Exact command
@@ -53,7 +55,7 @@ python oneclick.py "Your topic" --no-bgm
 |-----------|----------------|
 | Script    | Local template from the topic. Optional LLM **only** if an env var such as `OPENAI_API_KEY` is already set; failure falls back to the template. |
 | Voice     | Edge TTS (free, no API key). Chinese topics use `zh-CN-XiaoxiaoNeural`; otherwise `en-US-JennyNeural`. |
-| Visuals   | Files in `resource/clips/`, or generated 1080×1920 color/title cards. |
+| Visuals   | Files in `resource/clips/` when present; empty folder falls back to generated 1080×1920 color/title cards. |
 | Subtitles | Burned from Edge TTS timestamps. Whisper / GPU is not used. |
 | BGM       | Random file from `resource/songs/` or `storage/bgm/` if any exist; silent otherwise. |
 

@@ -99,10 +99,16 @@ class TestMvpHelpers(unittest.TestCase):
             (Path(temp_dir) / "keep.mp4").write_bytes(b"clip")
             (Path(temp_dir) / "also.png").write_bytes(b"image")
             (Path(temp_dir) / "skip.txt").write_text("nope", encoding="utf-8")
+            (Path(temp_dir) / ".gitkeep").write_text("", encoding="utf-8")
             self.assertEqual(
                 [Path(path).name for path in mvp.list_local_clips(temp_dir)],
                 ["also.png", "keep.mp4"],
             )
+
+    def test_list_local_clips_treats_empty_folder_as_no_clips(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / ".gitkeep").write_text("", encoding="utf-8")
+            self.assertEqual(mvp.list_local_clips(temp_dir), [])
 
     def test_resolve_bgm_type_is_silent_without_songs(self):
         with patch("app.services.bgm.list_bgm_files", return_value=[]):
@@ -136,7 +142,7 @@ class TestMvpHelpers(unittest.TestCase):
             self.assertEqual(probe["height"], 1920)
             self.assertGreaterEqual(probe["duration"], 7.0)
 
-    def test_prepare_visuals_prefers_resource_clips(self):
+    def test_prepare_visuals_uses_resource_clips_when_files_exist(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             clips_dir = Path(temp_dir) / "clips"
             storage_dir = Path(temp_dir) / "local_videos"
@@ -146,15 +152,40 @@ class TestMvpHelpers(unittest.TestCase):
             source.write_bytes(b"local-clip")
 
             with (
-                patch.object(mvp, "list_local_clips", return_value=[str(source)]),
+                patch.object(mvp, "clips_dir", return_value=str(clips_dir)),
                 patch.object(utils, "storage_dir", return_value=str(storage_dir)),
+                patch.object(mvp, "generate_title_cards") as generate_cards,
             ):
                 materials, source_name = mvp.prepare_visuals("topic")
 
-                self.assertEqual(source_name, "clips")
-                self.assertEqual(len(materials), 1)
-                self.assertTrue(materials[0].url.startswith(str(storage_dir)))
-                self.assertEqual(Path(materials[0].url).read_bytes(), b"local-clip")
+            generate_cards.assert_not_called()
+            self.assertEqual(source_name, "clips")
+            self.assertEqual(len(materials), 1)
+            self.assertTrue(materials[0].url.startswith(str(storage_dir)))
+            self.assertEqual(Path(materials[0].url).read_bytes(), b"local-clip")
+
+    def test_prepare_visuals_empty_clips_dir_falls_back_to_title_cards(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clips_dir = Path(temp_dir) / "clips"
+            storage_dir = Path(temp_dir) / "local_videos"
+            clips_dir.mkdir()
+            storage_dir.mkdir()
+            (clips_dir / ".gitkeep").write_text("", encoding="utf-8")
+            card_path = storage_dir / "mvp-title.mp4"
+            card_path.write_bytes(b"title-card")
+
+            with (
+                patch.object(mvp, "clips_dir", return_value=str(clips_dir)),
+                patch.object(utils, "storage_dir", return_value=str(storage_dir)),
+                patch.object(
+                    mvp, "generate_title_cards", return_value=[str(card_path)]
+                ) as generate_cards,
+            ):
+                materials, source_name = mvp.prepare_visuals("topic")
+
+            generate_cards.assert_called_once_with("topic", str(storage_dir))
+            self.assertEqual(source_name, "title_cards")
+            self.assertEqual([item.url for item in materials], [str(card_path)])
 
     def test_build_video_params_uses_local_source_and_edge_voice(self):
         materials = [MaterialInfo(provider="local", url="/tmp/card.mp4", duration=0)]
@@ -205,6 +236,76 @@ class TestOneclickCli(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["video"], "/tmp/out.mp4")
         self.assertEqual(payload["script_source"], "template")
+
+    def test_run_oneclick_uses_local_clips_when_present(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clips_dir = Path(temp_dir) / "clips"
+            storage_dir = Path(temp_dir) / "local_videos"
+            clips_dir.mkdir()
+            storage_dir.mkdir()
+            (clips_dir / "scene.mp4").write_bytes(b"local-clip")
+
+            with (
+                patch.object(mvp, "optional_llm_env_present", return_value=False),
+                patch.object(mvp, "clips_dir", return_value=str(clips_dir)),
+                patch.object(utils, "storage_dir", return_value=str(storage_dir)),
+                patch.object(mvp, "generate_title_cards") as generate_cards,
+                patch.object(mvp, "resolve_bgm_type", return_value=""),
+                patch(
+                    "app.services.task.start",
+                    return_value={"videos": ["/tmp/out.mp4"]},
+                ) as start,
+                patch("app.utils.utils.get_uuid", return_value="task-clips"),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                code = oneclick.run_oneclick(["How AI is changing everyday life"])
+
+        generate_cards.assert_not_called()
+        self.assertEqual(code, 0)
+        params = start.call_args.kwargs["params"]
+        self.assertEqual(params.video_source, "local")
+        self.assertEqual(params.video_aspect.value, "9:16")
+        self.assertEqual(len(params.video_materials), 1)
+        self.assertTrue(params.video_materials[0].url.startswith(str(storage_dir)))
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["visual_source"], "clips")
+        self.assertEqual(payload["video"], "/tmp/out.mp4")
+
+    def test_run_oneclick_falls_back_to_title_cards_when_clips_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clips_dir = Path(temp_dir) / "clips"
+            storage_dir = Path(temp_dir) / "local_videos"
+            clips_dir.mkdir()
+            storage_dir.mkdir()
+            (clips_dir / ".gitkeep").write_text("", encoding="utf-8")
+            card_path = storage_dir / "mvp-title.mp4"
+            card_path.write_bytes(b"title-card")
+
+            with (
+                patch.object(mvp, "optional_llm_env_present", return_value=False),
+                patch.object(mvp, "clips_dir", return_value=str(clips_dir)),
+                patch.object(utils, "storage_dir", return_value=str(storage_dir)),
+                patch.object(
+                    mvp, "generate_title_cards", return_value=[str(card_path)]
+                ) as generate_cards,
+                patch.object(mvp, "resolve_bgm_type", return_value=""),
+                patch(
+                    "app.services.task.start",
+                    return_value={"videos": ["/tmp/out.mp4"]},
+                ) as start,
+                patch("app.utils.utils.get_uuid", return_value="task-cards"),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                code = oneclick.run_oneclick(["How AI is changing everyday life"])
+
+        generate_cards.assert_called_once()
+        self.assertEqual(code, 0)
+        params = start.call_args.kwargs["params"]
+        self.assertEqual(params.video_source, "local")
+        self.assertEqual(params.video_aspect.value, "9:16")
+        self.assertEqual([item.url for item in params.video_materials], [str(card_path)])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["visual_source"], "title_cards")
 
     def test_run_oneclick_returns_error_on_task_failure(self):
         materials = [MaterialInfo(provider="local", url="/tmp/card.mp4", duration=0)]

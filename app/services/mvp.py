@@ -41,6 +41,7 @@ OPTIONAL_LLM_ENV_VARS = (
 _CLIP_EXTENSIONS = {
     f".{ext}" for ext in (*const.FILE_TYPE_VIDEOS, *const.FILE_TYPE_IMAGES)
 }
+_STILL_EXTENSIONS = {f".{ext}" for ext in const.FILE_TYPE_IMAGES}
 
 
 def looks_cjk(text: str) -> bool:
@@ -247,7 +248,7 @@ def _encode_still_to_mp4(
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning(f"title card ffmpeg failed: {exc}")
+        logger.warning(f"still ffmpeg encode failed: {exc}")
         return False
     return completed.returncode == 0 and os.path.isfile(output_path)
 
@@ -288,20 +289,43 @@ def generate_title_cards(
     return paths
 
 
+def _stage_local_clip(source_path: str, local_dir: str, ffmpeg: str) -> str | None:
+    """Copy videos as-is; encode listed stills to MP4 before the task pipeline."""
+    extension = Path(source_path).suffix.lower()
+    if extension in _STILL_EXTENSIONS:
+        target_path = os.path.join(local_dir, f"mvp-clip-{uuid4().hex}.mp4")
+        if not _encode_still_to_mp4(
+            source_path,
+            target_path,
+            duration=TITLE_CARD_DURATION_SECONDS,
+            ffmpeg=ffmpeg,
+        ):
+            logger.error(f"failed to encode still clip: {source_path}")
+            return None
+        return target_path
+
+    target_path = os.path.join(local_dir, f"mvp-clip-{uuid4().hex}{extension}")
+    shutil.copy2(source_path, target_path)
+    return target_path
+
+
 def prepare_visuals(topic: str) -> tuple[list[MaterialInfo], str]:
     """Use resource/clips when present; otherwise write local title cards."""
     local_dir = utils.storage_dir("local_videos", create=True)
     clips = list_local_clips()
     if clips:
+        ffmpeg = utils.get_ffmpeg_binary()
         materials: list[MaterialInfo] = []
         for source_path in clips:
-            extension = Path(source_path).suffix.lower()
-            target_path = os.path.join(
-                local_dir, f"mvp-clip-{uuid4().hex}{extension}"
-            )
-            shutil.copy2(source_path, target_path)
+            staged_path = _stage_local_clip(source_path, local_dir, ffmpeg)
+            if not staged_path:
+                continue
             materials.append(
-                MaterialInfo(provider="local", url=target_path, duration=0)
+                MaterialInfo(provider="local", url=staged_path, duration=0)
+            )
+        if not materials:
+            raise RuntimeError(
+                "failed to prepare local clips; install ffmpeg and retry"
             )
         return materials, "clips"
 

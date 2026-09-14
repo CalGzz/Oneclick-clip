@@ -162,7 +162,39 @@ class TestMvpHelpers(unittest.TestCase):
             self.assertEqual(source_name, "clips")
             self.assertEqual(len(materials), 1)
             self.assertTrue(materials[0].url.startswith(str(storage_dir)))
+            self.assertEqual(Path(materials[0].url).suffix.lower(), ".mp4")
             self.assertEqual(Path(materials[0].url).read_bytes(), b"local-clip")
+
+    def test_prepare_visuals_encodes_png_still_to_mp4(self):
+        if not utils.check_ffmpeg_ready():
+            self.skipTest("ffmpeg is required to encode still clips")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clips_dir = Path(temp_dir) / "clips"
+            storage_dir = Path(temp_dir) / "local_videos"
+            clips_dir.mkdir()
+            storage_dir.mkdir()
+            still_path = clips_dir / "scene.png"
+            _write_portrait_png(still_path)
+
+            with (
+                patch.object(mvp, "clips_dir", return_value=str(clips_dir)),
+                patch.object(utils, "storage_dir", return_value=str(storage_dir)),
+                patch.object(mvp, "generate_title_cards") as generate_cards,
+            ):
+                materials, source_name = mvp.prepare_visuals("topic")
+
+            generate_cards.assert_not_called()
+            self.assertEqual(source_name, "clips")
+            self.assertEqual(len(materials), 1)
+            staged = Path(materials[0].url)
+            self.assertTrue(str(staged).startswith(str(storage_dir)))
+            self.assertEqual(staged.suffix.lower(), ".mp4")
+            self.assertNotEqual(staged.read_bytes(), still_path.read_bytes())
+            probe = _probe_video(str(staged))
+            self.assertEqual(probe["width"], 1080)
+            self.assertEqual(probe["height"], 1920)
+            self.assertGreaterEqual(probe["duration"], 7.0)
 
     def test_prepare_visuals_empty_clips_dir_falls_back_to_title_cards(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -271,6 +303,47 @@ class TestOneclickCli(unittest.TestCase):
         self.assertEqual(payload["visual_source"], "clips")
         self.assertEqual(payload["video"], "/tmp/out.mp4")
 
+    def test_run_oneclick_encodes_png_clip_to_mp4(self):
+        if not utils.check_ffmpeg_ready():
+            self.skipTest("ffmpeg is required to encode still clips")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clips_dir = Path(temp_dir) / "clips"
+            storage_dir = Path(temp_dir) / "local_videos"
+            clips_dir.mkdir()
+            storage_dir.mkdir()
+            _write_portrait_png(clips_dir / "only.png")
+
+            with (
+                patch.object(mvp, "optional_llm_env_present", return_value=False),
+                patch.object(mvp, "clips_dir", return_value=str(clips_dir)),
+                patch.object(utils, "storage_dir", return_value=str(storage_dir)),
+                patch.object(mvp, "generate_title_cards") as generate_cards,
+                patch.object(mvp, "resolve_bgm_type", return_value=""),
+                patch(
+                    "app.services.task.start",
+                    return_value={"videos": ["/tmp/out.mp4"]},
+                ) as start,
+                patch("app.utils.utils.get_uuid", return_value="task-png"),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                code = oneclick.run_oneclick(["How AI is changing everyday life"])
+
+        generate_cards.assert_not_called()
+        self.assertEqual(code, 0)
+        params = start.call_args.kwargs["params"]
+        self.assertEqual(params.video_source, "local")
+        self.assertEqual(params.video_aspect.value, "9:16")
+        self.assertEqual(len(params.video_materials), 1)
+        staged = Path(params.video_materials[0].url)
+        self.assertEqual(staged.suffix.lower(), ".mp4")
+        probe = _probe_video(str(staged))
+        self.assertEqual((probe["width"], probe["height"]), (1080, 1920))
+        self.assertGreaterEqual(probe["duration"], 7.0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["visual_source"], "clips")
+        self.assertEqual(payload["video"], "/tmp/out.mp4")
+
     def test_run_oneclick_falls_back_to_title_cards_when_clips_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             clips_dir = Path(temp_dir) / "clips"
@@ -329,6 +402,12 @@ class TestOneclickCli(unittest.TestCase):
             code = oneclick.run_oneclick(["topic"])
 
         self.assertEqual(code, 1)
+
+
+def _write_portrait_png(path: Path) -> None:
+    from PIL import Image
+
+    Image.new("RGB", (1080, 1920), (26, 26, 46)).save(path)
 
 
 def _probe_video(path: str) -> dict[str, float]:

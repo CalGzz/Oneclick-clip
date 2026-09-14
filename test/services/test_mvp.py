@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -196,6 +197,61 @@ class TestMvpHelpers(unittest.TestCase):
             self.assertEqual(probe["height"], 1920)
             self.assertGreaterEqual(probe["duration"], 7.0)
 
+    def test_prepare_visuals_upscales_small_png_to_1080x1920(self):
+        if not utils.check_ffmpeg_ready():
+            self.skipTest("ffmpeg is required to encode still clips")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clips_dir = Path(temp_dir) / "clips"
+            storage_dir = Path(temp_dir) / "local_videos"
+            clips_dir.mkdir()
+            storage_dir.mkdir()
+            still_path = clips_dir / "影像.png"
+            _write_png(still_path, 170, 170)
+
+            with (
+                patch.object(mvp, "clips_dir", return_value=str(clips_dir)),
+                patch.object(utils, "storage_dir", return_value=str(storage_dir)),
+                patch.object(mvp, "generate_title_cards") as generate_cards,
+            ):
+                materials, source_name = mvp.prepare_visuals("topic")
+
+            generate_cards.assert_not_called()
+            self.assertEqual(source_name, "clips")
+            self.assertEqual(len(materials), 1)
+            staged = Path(materials[0].url)
+            self.assertEqual(staged.suffix.lower(), ".mp4")
+            probe = _probe_video(str(staged))
+            self.assertEqual((probe["width"], probe["height"]), (1080, 1920))
+            self.assertGreaterEqual(probe["duration"], 7.0)
+
+    def test_encode_still_to_mp4_uses_utf8_replace_and_portrait_scale(self):
+        with (
+            patch(
+                "app.services.mvp.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
+            ) as run,
+            patch("os.path.isfile", return_value=True),
+        ):
+            ok = mvp._encode_still_to_mp4(
+                r".\resource\clips\影像.png",
+                "out.mp4",
+                duration=8.0,
+                ffmpeg="ffmpeg",
+            )
+
+        self.assertTrue(ok)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs.get("encoding"), "utf-8")
+        self.assertEqual(kwargs.get("errors"), "replace")
+        self.assertIsNone(kwargs.get("text"))
+        command = run.call_args.args[0]
+        self.assertIn("-vf", command)
+        self.assertIn(mvp._STILL_SCALE_FILTER, command)
+        self.assertIn("1080:1920", mvp._STILL_SCALE_FILTER)
+
     def test_prepare_visuals_empty_clips_dir_falls_back_to_title_cards(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             clips_dir = Path(temp_dir) / "clips"
@@ -312,7 +368,7 @@ class TestOneclickCli(unittest.TestCase):
             storage_dir = Path(temp_dir) / "local_videos"
             clips_dir.mkdir()
             storage_dir.mkdir()
-            _write_portrait_png(clips_dir / "only.png")
+            _write_png(clips_dir / "logo.png", 170, 170)
 
             with (
                 patch.object(mvp, "optional_llm_env_present", return_value=False),
@@ -404,10 +460,14 @@ class TestOneclickCli(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
-def _write_portrait_png(path: Path) -> None:
+def _write_png(path: Path, width: int = 1080, height: int = 1920) -> None:
     from PIL import Image
 
-    Image.new("RGB", (1080, 1920), (26, 26, 46)).save(path)
+    Image.new("RGB", (width, height), (26, 26, 46)).save(path)
+
+
+def _write_portrait_png(path: Path) -> None:
+    _write_png(path, 1080, 1920)
 
 
 def _probe_video(path: str) -> dict[str, float]:

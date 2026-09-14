@@ -27,6 +27,12 @@ CLIP_DIR_NAME = "clips"
 TITLE_CARD_DURATION_SECONDS = 8.0
 TITLE_CARD_COUNT = 3
 TITLE_CARD_COLORS = ("1a1a2e", "16213e", "0f3460")
+PORTRAIT_WIDTH = 1080
+PORTRAIT_HEIGHT = 1920
+_STILL_SCALE_FILTER = (
+    f"scale={PORTRAIT_WIDTH}:{PORTRAIT_HEIGHT}:force_original_aspect_ratio=decrease,"
+    f"pad={PORTRAIT_WIDTH}:{PORTRAIT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+)
 # Only honor already-present env vars. Do not read paid keys from config.toml.
 OPTIONAL_LLM_ENV_VARS = (
     "OPENAI_API_KEY",
@@ -182,7 +188,7 @@ def render_title_card_image(topic: str, output_path: str, color: str) -> None:
     """Paint a 1080x1920 title card. Pillow avoids ffmpeg drawtext/libfreetype."""
     from PIL import Image, ImageDraw, ImageFont
 
-    image = Image.new("RGB", (1080, 1920), _hex_to_rgb(color))
+    image = Image.new("RGB", (PORTRAIT_WIDTH, PORTRAIT_HEIGHT), _hex_to_rgb(color))
     draw = ImageDraw.Draw(image)
     font_path = _title_font_path(topic)
     try:
@@ -200,8 +206,8 @@ def render_title_card_image(topic: str, output_path: str, color: str) -> None:
     )
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
-    x = (1080 - text_width) / 2 - bbox[0]
-    y = (1920 - text_height) / 2 - bbox[1]
+    x = (PORTRAIT_WIDTH - text_width) / 2 - bbox[0]
+    y = (PORTRAIT_HEIGHT - text_height) / 2 - bbox[1]
     draw.multiline_text(
         (x, y),
         title,
@@ -231,6 +237,8 @@ def _encode_still_to_mp4(
         image_path,
         "-t",
         str(duration),
+        "-vf",
+        _STILL_SCALE_FILTER,
         "-pix_fmt",
         "yuv420p",
         "-r",
@@ -240,17 +248,27 @@ def _encode_still_to_mp4(
         output_path,
     ]
     try:
+        # Windows locale is often cp1252. ffmpeg stderr can include CJK paths
+        # (byte 0x8f etc.); decode as UTF-8 and replace so the reader thread
+        # does not raise UnicodeDecodeError.
         completed = subprocess.run(
             command,
             check=False,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as exc:
         logger.warning(f"still ffmpeg encode failed: {exc}")
         return False
-    return completed.returncode == 0 and os.path.isfile(output_path)
+    if completed.returncode == 0 and os.path.isfile(output_path):
+        return True
+    logger.warning(
+        "still ffmpeg encode failed: "
+        f"code={completed.returncode} {(completed.stderr or '')[-500:]}"
+    )
+    return False
 
 
 def generate_title_cards(
@@ -290,19 +308,27 @@ def generate_title_cards(
 
 
 def _stage_local_clip(source_path: str, local_dir: str, ffmpeg: str) -> str | None:
-    """Copy videos as-is; encode listed stills to MP4 before the task pipeline."""
+    """Copy videos as-is; encode listed stills to 1080x1920 MP4 before compose."""
     extension = Path(source_path).suffix.lower()
     if extension in _STILL_EXTENSIONS:
-        target_path = os.path.join(local_dir, f"mvp-clip-{uuid4().hex}.mp4")
-        if not _encode_still_to_mp4(
-            source_path,
-            target_path,
-            duration=TITLE_CARD_DURATION_SECONDS,
-            ffmpeg=ffmpeg,
-        ):
-            logger.error(f"failed to encode still clip: {source_path}")
-            return None
-        return target_path
+        stem = uuid4().hex
+        # ASCII temp input so Windows ffmpeg does not have to open a CJK path.
+        ascii_still = os.path.join(local_dir, f"mvp-still-{stem}{extension}")
+        target_path = os.path.join(local_dir, f"mvp-clip-{stem}.mp4")
+        try:
+            shutil.copy2(source_path, ascii_still)
+            if not _encode_still_to_mp4(
+                ascii_still,
+                target_path,
+                duration=TITLE_CARD_DURATION_SECONDS,
+                ffmpeg=ffmpeg,
+            ):
+                logger.error(f"failed to encode still clip: {source_path}")
+                return None
+            return target_path
+        finally:
+            if os.path.exists(ascii_still):
+                os.remove(ascii_still)
 
     target_path = os.path.join(local_dir, f"mvp-clip-{uuid4().hex}{extension}")
     shutil.copy2(source_path, target_path)

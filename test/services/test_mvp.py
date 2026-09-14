@@ -329,20 +329,20 @@ class TestOneclickCli(unittest.TestCase):
             ):
                 code = oneclick.run_oneclick(["How AI is changing everyday life"])
 
-        generate_cards.assert_not_called()
-        self.assertEqual(code, 0)
-        params = start.call_args.kwargs["params"]
-        self.assertEqual(params.video_source, "local")
-        self.assertEqual(params.video_aspect.value, "9:16")
-        self.assertEqual(len(params.video_materials), 1)
-        staged = Path(params.video_materials[0].url)
-        self.assertEqual(staged.suffix.lower(), ".mp4")
-        probe = _probe_video(str(staged))
-        self.assertEqual((probe["width"], probe["height"]), (1080, 1920))
-        self.assertGreaterEqual(probe["duration"], 7.0)
-        payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["visual_source"], "clips")
-        self.assertEqual(payload["video"], "/tmp/out.mp4")
+            generate_cards.assert_not_called()
+            self.assertEqual(code, 0)
+            params = start.call_args.kwargs["params"]
+            self.assertEqual(params.video_source, "local")
+            self.assertEqual(params.video_aspect.value, "9:16")
+            self.assertEqual(len(params.video_materials), 1)
+            staged = Path(params.video_materials[0].url)
+            self.assertEqual(staged.suffix.lower(), ".mp4")
+            probe = _probe_video(str(staged))
+            self.assertEqual((probe["width"], probe["height"]), (1080, 1920))
+            self.assertGreaterEqual(probe["duration"], 7.0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["visual_source"], "clips")
+            self.assertEqual(payload["video"], "/tmp/out.mp4")
 
     def test_run_oneclick_falls_back_to_title_cards_when_clips_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
